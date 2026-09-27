@@ -38,13 +38,14 @@ class MainActivity : Activity() {
                 text.append("id: ${light.id}\n")
                 text.append("type: ${light.type}\n")
                 text.append("ordinal: ${light.ordinal}\n")
-                text.append("capabilities: ${light.capabilities}\n")
 
                 try {
                     val state = manager.getLightState(light)
                     text.append("state: $state\n")
                 } catch (e: Exception) {
-                    text.append("state: ${e.javaClass.simpleName}\n")
+                    text.append(
+                        "state: ${e.javaClass.simpleName}\n"
+                    )
                 }
 
                 text.append("\n")
