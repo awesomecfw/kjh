@@ -15,7 +15,7 @@ I made this because I wanted to build Android side projects on a shared PC witho
 ---
 
 ## ✨ What this template does
-
+kh
 | Situation | How it helped me |
 |---|---|
 | Shared or low-spec PC where Android Studio is hard to run | Everything ran on GitHub Actions — I didn't need to install anything locally |
