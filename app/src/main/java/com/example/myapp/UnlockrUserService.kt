@@ -112,10 +112,6 @@ class UnlockrUserService : Service() {
         }
     }
 
-    override fun onCreate() {
-        super.onCreate()
-    }
-
     override fun onBind(intent: Intent?): IBinder {
         return binder
     }
@@ -123,9 +119,7 @@ class UnlockrUserService : Service() {
     override fun onDestroy() {
         stopRainbowInternal()
         clearLedInternal()
-
         executor.shutdownNow()
-
         super.onDestroy()
     }
 
@@ -140,7 +134,7 @@ class UnlockrUserService : Service() {
             "|",
             "&",
             "`",
-            "\$(`,
+            "$(",
             ">",
             "<",
             "\n",
@@ -206,8 +200,9 @@ class UnlockrUserService : Service() {
 
     private fun inspectLightsInternal(): String {
         return try {
-            val manager = getSystemService(LightsManager::class.java)
-                ?: return "LightsManager unavailable"
+            val manager =
+                getSystemService(LightsManager::class.java)
+                    ?: return "LightsManager unavailable"
 
             val lights = manager.lights
 
@@ -225,7 +220,8 @@ class UnlockrUserService : Service() {
                     append("brightness: ${light.hasBrightnessControl()}\n")
 
                     try {
-                        val state = manager.getLightState(light)
+                        val state =
+                            manager.getLightState(light)
 
                         append(
                             "color: #${
@@ -248,8 +244,9 @@ class UnlockrUserService : Service() {
     }
 
     private fun getQuestLight(): Light? {
-        val manager = getSystemService(LightsManager::class.java)
-            ?: return null
+        val manager =
+            getSystemService(LightsManager::class.java)
+                ?: return null
 
         return manager.lights.firstOrNull {
             it.id == 1
@@ -257,24 +254,28 @@ class UnlockrUserService : Service() {
     }
 
     private fun setLedInternal(color: Int): Boolean {
-        val manager = getSystemService(LightsManager::class.java)
-            ?: return false
+        val manager =
+            getSystemService(LightsManager::class.java)
+                ?: return false
 
-        val light = getQuestLight()
-            ?: return false
+        val light =
+            getQuestLight()
+                ?: return false
 
         return try {
             if (session == null) {
                 session = manager.openSession()
             }
 
-            val state = LightState.Builder()
-                .setColor(color)
-                .build()
+            val state =
+                LightState.Builder()
+                    .setColor(color)
+                    .build()
 
-            val request = LightsRequest.Builder()
-                .addLight(light, state)
-                .build()
+            val request =
+                LightsRequest.Builder()
+                    .addLight(light, state)
+                    .build()
 
             session!!.requestLights(request)
 
@@ -300,9 +301,10 @@ class UnlockrUserService : Service() {
 
         if (light != null && currentSession != null) {
             try {
-                val request = LightsRequest.Builder()
-                    .clearLight(light)
-                    .build()
+                val request =
+                    LightsRequest.Builder()
+                        .clearLight(light)
+                        .build()
 
                 currentSession.requestLights(request)
             } catch (_: Exception) {
@@ -320,13 +322,14 @@ class UnlockrUserService : Service() {
     private fun scheduleFailsafe(seconds: Long) {
         failsafeTask?.cancel(false)
 
-        failsafeTask = executor.schedule(
-            {
-                clearLedInternal()
-            },
-            seconds,
-            TimeUnit.SECONDS
-        )
+        failsafeTask =
+            executor.schedule(
+                {
+                    clearLedInternal()
+                },
+                seconds,
+                TimeUnit.SECONDS
+            )
     }
 
     private fun startRainbowInternal() {
@@ -345,49 +348,57 @@ class UnlockrUserService : Service() {
 
         var index = 0
 
-        rainbowTask = executor.scheduleAtFixedRate(
-            {
-                val color = colors[index % colors.size]
-                index++
+        rainbowTask =
+            executor.scheduleAtFixedRate(
+                {
+                    val color =
+                        colors[index % colors.size]
 
-                setLedInternalNoFailsafe(color)
-            },
-            0,
-            250,
-            TimeUnit.MILLISECONDS
-        )
+                    index++
+
+                    setLedInternalNoFailsafe(color)
+                },
+                0,
+                250,
+                TimeUnit.MILLISECONDS
+            )
 
         failsafeTask?.cancel(false)
 
-        failsafeTask = executor.schedule(
-            {
-                stopRainbowInternal()
-                clearLedInternal()
-            },
-            15,
-            TimeUnit.SECONDS
-        )
+        failsafeTask =
+            executor.schedule(
+                {
+                    stopRainbowInternal()
+                    clearLedInternal()
+                },
+                15,
+                TimeUnit.SECONDS
+            )
     }
 
     private fun setLedInternalNoFailsafe(color: Int) {
-        val manager = getSystemService(LightsManager::class.java)
-            ?: return
+        val manager =
+            getSystemService(LightsManager::class.java)
+                ?: return
 
-        val light = getQuestLight()
-            ?: return
+        val light =
+            getQuestLight()
+                ?: return
 
         try {
             if (session == null) {
                 session = manager.openSession()
             }
 
-            val state = LightState.Builder()
-                .setColor(color)
-                .build()
+            val state =
+                LightState.Builder()
+                    .setColor(color)
+                    .build()
 
-            val request = LightsRequest.Builder()
-                .addLight(light, state)
-                .build()
+            val request =
+                LightsRequest.Builder()
+                    .addLight(light, state)
+                    .build()
 
             session!!.requestLights(request)
         } catch (_: Exception) {
