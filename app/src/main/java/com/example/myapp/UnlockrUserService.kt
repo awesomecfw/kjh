@@ -1,95 +1,132 @@
 package com.example.myapp
 
-import android.content.Context
+import android.app.Service
+import android.content.Intent
 import android.hardware.lights.Light
 import android.hardware.lights.LightState
 import android.hardware.lights.LightsManager
 import android.hardware.lights.LightsRequest
-import android.os.SystemClock
+import android.os.IBinder
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
-class UnlockrUserService(
-    private val context: Context
-) : IUnlockrService.Stub() {
+class UnlockrUserService : Service() {
 
     private val executor = Executors.newSingleThreadScheduledExecutor()
+
     private var rainbowTask: ScheduledFuture<*>? = null
     private var failsafeTask: ScheduledFuture<*>? = null
-
-    private val lightsManager: LightsManager? =
-        context.getSystemService(LightsManager::class.java)
-
-    private val questLight: Light?
-        get() = lightsManager?.lights?.firstOrNull { it.id == 1 }
-
     private var session: LightsManager.LightsSession? = null
 
-    override fun getUid(): Int {
-        return android.os.Process.myUid()
-    }
+    private val binder = object : IUnlockrService.Stub() {
 
-    override fun exec(command: String): String {
-        if (!isSafeCommand(command)) {
-            return "BLOCKED BY UNLOCKR FAILSAFE\n\nOnly read-only ADB commands are allowed."
+        override fun getUid(): Int {
+            return android.os.Process.myUid()
         }
 
-        return try {
-            val process = ProcessBuilder(
-                "sh",
-                "-c",
-                command.trim()
-            )
-                .redirectErrorStream(true)
-                .start()
+        override fun exec(command: String): String {
+            if (!isSafeCommand(command)) {
+                return "BLOCKED BY UNLOCKR FAILSAFE\n\nOnly safe read-only commands are allowed."
+            }
 
-            val output = StringBuilder()
+            return try {
+                val process = ProcessBuilder(
+                    "sh",
+                    "-c",
+                    command.trim()
+                )
+                    .redirectErrorStream(true)
+                    .start()
 
-            BufferedReader(
-                InputStreamReader(process.inputStream)
-            ).use { reader ->
-                val buffer = CharArray(4096)
-                var total = 0
+                val output = StringBuilder()
 
-                while (true) {
-                    val count = reader.read(buffer)
-                    if (count <= 0) break
+                BufferedReader(
+                    InputStreamReader(process.inputStream)
+                ).use { reader ->
+                    val buffer = CharArray(4096)
+                    var total = 0
 
-                    val allowed = minOf(
-                        count,
-                        32768 - total
-                    )
+                    while (true) {
+                        val count = reader.read(buffer)
 
-                    if (allowed > 0) {
-                        output.append(buffer, 0, allowed)
-                        total += allowed
-                    }
+                        if (count <= 0) {
+                            break
+                        }
 
-                    if (total >= 32768) {
-                        output.append("\n\n[output truncated]")
-                        break
+                        val allowed = minOf(
+                            count,
+                            32768 - total
+                        )
+
+                        if (allowed > 0) {
+                            output.append(buffer, 0, allowed)
+                            total += allowed
+                        }
+
+                        if (total >= 32768) {
+                            output.append("\n\n[output truncated]")
+                            break
+                        }
                     }
                 }
-            }
 
-            if (!process.waitFor(5, TimeUnit.SECONDS)) {
-                process.destroyForcibly()
-                return "COMMAND TIMEOUT\n\nThe command was stopped after 5 seconds."
-            }
+                if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                    process.destroyForcibly()
+                    return "COMMAND TIMEOUT\n\nStopped after 5 seconds."
+                }
 
-            val result = output.toString()
+                val result = output.toString()
 
-            if (result.isBlank()) {
-                "exit=${process.exitValue()}"
-            } else {
-                result
+                if (result.isBlank()) {
+                    "exit=${process.exitValue()}"
+                } else {
+                    result
+                }
+            } catch (e: Exception) {
+                "COMMAND FAILED\n\n${e.javaClass.simpleName}: ${e.message}"
             }
-        } catch (e: Exception) {
-            "COMMAND FAILED\n\n${e.javaClass.simpleName}: ${e.message}"
         }
+
+        override fun inspectLights(): String {
+            return inspectLightsInternal()
+        }
+
+        override fun setLed(color: Int): Boolean {
+            stopRainbowInternal()
+            return setLedInternal(color)
+        }
+
+        override fun clearLed() {
+            clearLedInternal()
+        }
+
+        override fun startRainbow() {
+            startRainbowInternal()
+        }
+
+        override fun stopRainbow() {
+            stopRainbowInternal()
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+    }
+
+    override fun onBind(intent: Intent?): IBinder {
+        return binder
+    }
+
+    override fun onDestroy() {
+        stopRainbowInternal()
+        clearLedInternal()
+
+        executor.shutdownNow()
+
+        super.onDestroy()
     }
 
     private fun isSafeCommand(command: String): Boolean {
@@ -98,20 +135,19 @@ class UnlockrUserService(
         if (c.isEmpty()) return false
         if (c.length > 300) return false
 
-        val dangerousCharacters = listOf(
+        val blocked = listOf(
             ";",
             "|",
             "&",
             "`",
-            "$(",
-            "${'$'}(",
+            "\$(`,
             ">",
             "<",
             "\n",
             "\r"
         )
 
-        if (dangerousCharacters.any { c.contains(it) }) {
+        if (blocked.any { c.contains(it) }) {
             return false
         }
 
@@ -134,7 +170,9 @@ class UnlockrUserService(
             "uname"
         )
 
-        if (first !in allowed) return false
+        if (first !in allowed) {
+            return false
+        }
 
         if (first == "pm" && !c.startsWith("pm list ")) {
             return false
@@ -144,14 +182,16 @@ class UnlockrUserService(
             return false
         }
 
-        if (first == "wm" &&
+        if (
+            first == "wm" &&
             !c.startsWith("wm size") &&
             !c.startsWith("wm density")
         ) {
             return false
         }
 
-        if (first == "ls" &&
+        if (
+            first == "ls" &&
             !c.startsWith("ls /sdcard") &&
             !c.startsWith("ls /storage") &&
             !c.startsWith("ls /system") &&
@@ -164,9 +204,9 @@ class UnlockrUserService(
         return true
     }
 
-    override fun inspectLights(): String {
+    private fun inspectLightsInternal(): String {
         return try {
-            val manager = lightsManager
+            val manager = getSystemService(LightsManager::class.java)
                 ?: return "LightsManager unavailable"
 
             val lights = manager.lights
@@ -186,6 +226,7 @@ class UnlockrUserService(
 
                     try {
                         val state = manager.getLightState(light)
+
                         append(
                             "color: #${
                                 String.format(
@@ -194,7 +235,7 @@ class UnlockrUserService(
                                 )
                             }\n"
                         )
-                    } catch (e: Exception) {
+                    } catch (_: Exception) {
                         append("color: unavailable\n")
                     }
 
@@ -206,11 +247,21 @@ class UnlockrUserService(
         }
     }
 
-    override fun setLed(color: Int): Boolean {
-        stopRainbow()
+    private fun getQuestLight(): Light? {
+        val manager = getSystemService(LightsManager::class.java)
+            ?: return null
 
-        val light = questLight ?: return false
-        val manager = lightsManager ?: return false
+        return manager.lights.firstOrNull {
+            it.id == 1
+        }
+    }
+
+    private fun setLedInternal(color: Int): Boolean {
+        val manager = getSystemService(LightsManager::class.java)
+            ?: return false
+
+        val light = getQuestLight()
+            ?: return false
 
         return try {
             if (session == null) {
@@ -227,7 +278,7 @@ class UnlockrUserService(
 
             session!!.requestLights(request)
 
-            scheduleFailsafe()
+            scheduleFailsafe(10)
 
             true
         } catch (_: SecurityException) {
@@ -237,10 +288,14 @@ class UnlockrUserService(
         }
     }
 
-    override fun clearLed() {
-        stopRainbow()
+    private fun clearLedInternal() {
+        failsafeTask?.cancel(false)
+        failsafeTask = null
 
-        val light = questLight
+        rainbowTask?.cancel(false)
+        rainbowTask = null
+
+        val light = getQuestLight()
         val currentSession = session
 
         if (light != null && currentSession != null) {
@@ -260,20 +315,22 @@ class UnlockrUserService(
         }
 
         session = null
-        failsafeTask?.cancel(false)
-        failsafeTask = null
     }
 
-    private fun scheduleFailsafe() {
+    private fun scheduleFailsafe(seconds: Long) {
         failsafeTask?.cancel(false)
 
-        failsafeTask = executor.schedule({
-            clearLed()
-        }, 10, TimeUnit.SECONDS)
+        failsafeTask = executor.schedule(
+            {
+                clearLedInternal()
+            },
+            seconds,
+            TimeUnit.SECONDS
+        )
     }
 
-    override fun startRainbow() {
-        stopRainbow()
+    private fun startRainbowInternal() {
+        stopRainbowInternal()
 
         val colors = intArrayOf(
             0xFFFF0000.toInt(),
@@ -288,24 +345,36 @@ class UnlockrUserService(
 
         var index = 0
 
-        rainbowTask = executor.scheduleAtFixedRate({
-            val color = colors[index % colors.size]
-            index++
+        rainbowTask = executor.scheduleAtFixedRate(
+            {
+                val color = colors[index % colors.size]
+                index++
 
-            setLedInternal(color)
-        }, 0, 250, TimeUnit.MILLISECONDS)
+                setLedInternalNoFailsafe(color)
+            },
+            0,
+            250,
+            TimeUnit.MILLISECONDS
+        )
 
         failsafeTask?.cancel(false)
 
-        failsafeTask = executor.schedule({
-            stopRainbow()
-            clearLed()
-        }, 15, TimeUnit.SECONDS)
+        failsafeTask = executor.schedule(
+            {
+                stopRainbowInternal()
+                clearLedInternal()
+            },
+            15,
+            TimeUnit.SECONDS
+        )
     }
 
-    private fun setLedInternal(color: Int) {
-        val light = questLight ?: return
-        val manager = lightsManager ?: return
+    private fun setLedInternalNoFailsafe(color: Int) {
+        val manager = getSystemService(LightsManager::class.java)
+            ?: return
+
+        val light = getQuestLight()
+            ?: return
 
         try {
             if (session == null) {
@@ -325,7 +394,7 @@ class UnlockrUserService(
         }
     }
 
-    override fun stopRainbow() {
+    private fun stopRainbowInternal() {
         rainbowTask?.cancel(false)
         rainbowTask = null
     }
