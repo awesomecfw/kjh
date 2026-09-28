@@ -1,9 +1,12 @@
 package com.example.myapp
 
 import android.app.Activity
+import android.content.ComponentName
+import android.content.ServiceConnection
 import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
 import android.view.Gravity
 import android.view.View
@@ -30,30 +33,34 @@ class MainActivity : Activity() {
 
     private val permissionCode = 4201
 
-    private val permissionListener =
-        Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
-            if (requestCode == permissionCode) {
-                updateConnection()
-            }
-        }
-
-    private val serviceConnection = object : Shizuku.UserServiceConnection {
+    private val serviceConnection = object : ServiceConnection {
 
         override fun onServiceConnected(
-            componentName: android.content.ComponentName,
-            binder: android.os.IBinder
+            name: ComponentName?,
+            service: IBinder?
         ) {
-            unlockr = IUnlockrService.Stub.asInterface(binder)
-            connected = true
+            unlockr = IUnlockrService.Stub.asInterface(service)
+            connected = unlockr != null
 
             main.post {
-                status.text = "unlockr: connected • uid ${unlockr?.uid ?: 2000}"
-                output.text = "UNLOCKR READY\n\nbackend: Bytezuku / Shizuku\nuid: ${unlockr?.uid}\n"
+                if (connected) {
+                    val uid = unlockr?.uid ?: -1
+
+                    status.text =
+                        "unlockr: connected • uid $uid"
+
+                    output.text =
+                        "UNLOCKR READY\n\n" +
+                        "backend: Bytezuku / Shizuku\n" +
+                        "uid: $uid\n"
+                } else {
+                    status.text = "unlockr: connection failed"
+                }
             }
         }
 
         override fun onServiceDisconnected(
-            componentName: android.content.ComponentName
+            name: ComponentName?
         ) {
             unlockr = null
             connected = false
@@ -64,6 +71,16 @@ class MainActivity : Activity() {
         }
     }
 
+    private val permissionListener =
+        Shizuku.OnRequestPermissionResultListener {
+                requestCode,
+                grantResult ->
+
+            if (requestCode == permissionCode) {
+                updateConnection()
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -72,7 +89,9 @@ class MainActivity : Activity() {
 
         buildUi()
 
-        Shizuku.addRequestPermissionResultListener(permissionListener)
+        Shizuku.addRequestPermissionResultListener(
+            permissionListener
+        )
 
         updateConnection()
     }
@@ -87,7 +106,9 @@ class MainActivity : Activity() {
         } catch (_: Exception) {
         }
 
-        Shizuku.removeRequestPermissionResultListener(permissionListener)
+        Shizuku.removeRequestPermissionResultListener(
+            permissionListener
+        )
 
         executor.shutdownNow()
 
@@ -96,15 +117,26 @@ class MainActivity : Activity() {
 
     private fun updateConnection() {
         if (!Shizuku.pingBinder()) {
-            status.text = "unlockr: Bytezuku not running"
-            output.text = "start Bytezuku first."
+            status.text =
+                "unlockr: Bytezuku not running"
+
+            output.text =
+                "start Bytezuku first."
+
             return
         }
 
-        if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            status.text = "unlockr: permission required"
+        if (
+            Shizuku.checkSelfPermission() !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            status.text =
+                "unlockr: permission required"
 
-            Shizuku.requestPermission(permissionCode)
+            Shizuku.requestPermission(
+                permissionCode
+            )
+
             return
         }
 
@@ -118,35 +150,54 @@ class MainActivity : Activity() {
                 serviceConnection
             )
         } catch (e: Exception) {
-            status.text = "unlockr: bind failed"
-            output.text = "${e.javaClass.simpleName}\n\n${e.message}"
+            status.text =
+                "unlockr: bind failed"
+
+            output.text =
+                "${e.javaClass.simpleName}\n\n${e.message}"
         }
     }
 
     private fun serviceArgs(): Shizuku.UserServiceArgs {
         return Shizuku.UserServiceArgs(
-            android.content.ComponentName(
+            ComponentName(
                 this,
                 UnlockrUserService::class.java
             )
         )
             .daemon(false)
             .debuggable(true)
-            .version(2)
-            .tag("unlockr-test-service")
+            .version(1)
+            .tag("unlockr")
     }
 
     private fun buildUi() {
         val root = LinearLayout(this)
 
-        root.orientation = LinearLayout.VERTICAL
-        root.setPadding(24, 24, 24, 24)
-        root.setBackgroundColor(Color.rgb(10, 10, 12))
+        root.orientation =
+            LinearLayout.VERTICAL
+
+        root.setPadding(
+            24,
+            24,
+            24,
+            24
+        )
+
+        root.setBackgroundColor(
+            Color.rgb(10, 10, 12)
+        )
 
         status = TextView(this)
-        status.text = "unlockr: connecting..."
+
+        status.text =
+            "unlockr: connecting..."
+
         status.textSize = 15f
-        status.setTextColor(Color.WHITE)
+
+        status.setTextColor(
+            Color.WHITE
+        )
 
         root.addView(
             status,
@@ -157,8 +208,12 @@ class MainActivity : Activity() {
         )
 
         val tabs = LinearLayout(this)
-        tabs.orientation = LinearLayout.HORIZONTAL
-        tabs.gravity = Gravity.CENTER_VERTICAL
+
+        tabs.orientation =
+            LinearLayout.HORIZONTAL
+
+        tabs.gravity =
+            Gravity.CENTER_VERTICAL
 
         root.addView(
             tabs,
@@ -171,8 +226,11 @@ class MainActivity : Activity() {
             }
         )
 
-        val terminalButton = makeButton("terminal")
-        val lightsButton = makeButton("lights")
+        val terminalButton =
+            makeButton("terminal")
+
+        val lightsButton =
+            makeButton("lights")
 
         tabs.addView(
             terminalButton,
@@ -192,8 +250,11 @@ class MainActivity : Activity() {
             )
         )
 
-        val content = LinearLayout(this)
-        content.orientation = LinearLayout.VERTICAL
+        val content =
+            LinearLayout(this)
+
+        content.orientation =
+            LinearLayout.VERTICAL
 
         root.addView(
             content,
@@ -204,18 +265,41 @@ class MainActivity : Activity() {
             )
         )
 
-        command = EditText(this)
-        command.hint = "adb shell command"
+        command =
+            EditText(this)
+
+        command.hint =
+            "adb shell command"
+
         command.setSingleLine(true)
-        command.setTextColor(Color.WHITE)
-        command.setHintTextColor(Color.GRAY)
-        command.setBackgroundColor(Color.rgb(25, 25, 28))
-        command.setPadding(18, 14, 18, 14)
 
-        val run = makeButton("run")
+        command.setTextColor(
+            Color.WHITE
+        )
 
-        val terminalControls = LinearLayout(this)
-        terminalControls.orientation = LinearLayout.HORIZONTAL
+        command.setHintTextColor(
+            Color.GRAY
+        )
+
+        command.setBackgroundColor(
+            Color.rgb(25, 25, 28)
+        )
+
+        command.setPadding(
+            18,
+            14,
+            18,
+            14
+        )
+
+        val run =
+            makeButton("run")
+
+        val terminalControls =
+            LinearLayout(this)
+
+        terminalControls.orientation =
+            LinearLayout.HORIZONTAL
 
         terminalControls.addView(
             command,
@@ -234,16 +318,35 @@ class MainActivity : Activity() {
             )
         )
 
-        content.addView(terminalControls)
+        content.addView(
+            terminalControls
+        )
 
-        output = TextView(this)
-        output.text = "waiting for unlockr..."
-        output.textSize = 13f
-        output.typeface = android.graphics.Typeface.MONOSPACE
-        output.setTextColor(Color.rgb(225, 225, 225))
-        output.setPadding(12, 16, 12, 16)
+        output =
+            TextView(this)
 
-        val scroll = ScrollView(this)
+        output.text =
+            "waiting for unlockr..."
+
+        output.textSize =
+            13f
+
+        output.typeface =
+            android.graphics.Typeface.MONOSPACE
+
+        output.setTextColor(
+            Color.rgb(225, 225, 225)
+        )
+
+        output.setPadding(
+            12,
+            16,
+            12,
+            16
+        )
+
+        val scroll =
+            ScrollView(this)
 
         scroll.addView(output)
 
@@ -261,31 +364,47 @@ class MainActivity : Activity() {
         setContentView(root)
 
         run.setOnClickListener {
-            runCommand(command.text.toString())
+            runCommand(
+                command.text.toString()
+            )
         }
 
         terminalButton.setOnClickListener {
-            showTerminal(content, terminalControls, scroll)
+            showTerminal(
+                terminalControls,
+                scroll
+            )
         }
 
         lightsButton.setOnClickListener {
-            showLights(content, terminalControls, scroll)
-        }
-
-        command.setOnEditorActionListener { _, _, _ ->
-            runCommand(command.text.toString())
-            true
+            showLights(
+                content,
+                terminalControls,
+                scroll
+            )
         }
     }
 
     private fun showTerminal(
-        content: LinearLayout,
         controls: LinearLayout,
         scroll: ScrollView
     ) {
-        controls.visibility = View.VISIBLE
-        scroll.visibility = View.VISIBLE
-        output.text = "SAFE ADB TERMINAL\n\ntry:\nid\ngetprop ro.product.model\ndumpsys lights\npm list packages\nps\nwm size\nwm density\n"
+        controls.visibility =
+            View.VISIBLE
+
+        scroll.visibility =
+            View.VISIBLE
+
+        output.text =
+            "SAFE ADB TERMINAL\n\n" +
+            "try:\n" +
+            "id\n" +
+            "getprop ro.product.model\n" +
+            "dumpsys lights\n" +
+            "pm list packages\n" +
+            "ps\n" +
+            "wm size\n" +
+            "wm density\n"
     }
 
     private fun showLights(
@@ -293,22 +412,44 @@ class MainActivity : Activity() {
         controls: LinearLayout,
         scroll: ScrollView
     ) {
-        controls.visibility = View.GONE
-        scroll.visibility = View.VISIBLE
+        controls.visibility =
+            View.GONE
 
-        val panel = LinearLayout(this)
-        panel.orientation = LinearLayout.VERTICAL
+        val panel =
+            LinearLayout(this)
 
-        val inspect = makeButton("inspect lights")
-        val red = makeButton("red")
-        val green = makeButton("green")
-        val blue = makeButton("blue")
-        val white = makeButton("white")
-        val yellow = makeButton("yellow")
-        val purple = makeButton("purple")
-        val cyan = makeButton("cyan")
-        val rainbow = makeButton("rainbow")
-        val off = makeButton("failsafe off")
+        panel.orientation =
+            LinearLayout.VERTICAL
+
+        val inspect =
+            makeButton("inspect lights")
+
+        val red =
+            makeButton("red")
+
+        val green =
+            makeButton("green")
+
+        val blue =
+            makeButton("blue")
+
+        val white =
+            makeButton("white")
+
+        val yellow =
+            makeButton("yellow")
+
+        val purple =
+            makeButton("purple")
+
+        val cyan =
+            makeButton("cyan")
+
+        val rainbow =
+            makeButton("rainbow")
+
+        val off =
+            makeButton("failsafe off")
 
         panel.addView(inspect)
         panel.addView(red)
@@ -344,80 +485,121 @@ class MainActivity : Activity() {
 
         inspect.setOnClickListener {
             remote {
-                unlockr?.inspectLights() ?: "not connected"
+                unlockr?.inspectLights()
+                    ?: "not connected"
             }
         }
 
         red.setOnClickListener {
-            led(0xFFFF0000.toInt(), "red")
+            led(
+                0xFFFF0000.toInt(),
+                "red"
+            )
         }
 
         green.setOnClickListener {
-            led(0xFF00FF00.toInt(), "green")
+            led(
+                0xFF00FF00.toInt(),
+                "green"
+            )
         }
 
         blue.setOnClickListener {
-            led(0xFF0000FF.toInt(), "blue")
+            led(
+                0xFF0000FF.toInt(),
+                "blue"
+            )
         }
 
         white.setOnClickListener {
-            led(0xFFFFFFFF.toInt(), "white")
+            led(
+                0xFFFFFFFF.toInt(),
+                "white"
+            )
         }
 
         yellow.setOnClickListener {
-            led(0xFFFFFF00.toInt(), "yellow")
+            led(
+                0xFFFFFF00.toInt(),
+                "yellow"
+            )
         }
 
         purple.setOnClickListener {
-            led(0xFF8000FF.toInt(), "purple")
+            led(
+                0xFF8000FF.toInt(),
+                "purple"
+            )
         }
 
         cyan.setOnClickListener {
-            led(0xFF00FFFF.toInt(), "cyan")
+            led(
+                0xFF00FFFF.toInt(),
+                "cyan"
+            )
         }
 
         rainbow.setOnClickListener {
             remote {
                 unlockr?.startRainbow()
-                "rainbow started\n\nfailsafe: 15 seconds"
+
+                "rainbow started\n\n" +
+                    "failsafe: 15 seconds"
             }
         }
 
         off.setOnClickListener {
             remote {
                 unlockr?.clearLed()
-                "LED override cleared\n\nfailsafe active"
+
+                "LED override cleared\n\n" +
+                    "failsafe active"
             }
         }
     }
 
-    private fun led(color: Int, name: String) {
+    private fun led(
+        color: Int,
+        name: String
+    ) {
         remote {
-            val ok = unlockr?.setLed(color) == true
+            val ok =
+                unlockr?.setLed(color) == true
 
             if (ok) {
-                "$name LED requested\n\nlight id: 1\nfailsafe: 10 seconds"
+                "$name LED requested\n\n" +
+                    "light id: 1\n" +
+                    "failsafe: 10 seconds"
             } else {
-                "$name LED failed\n\ncheck permissions and dumpsys lights"
+                "$name LED failed\n\n" +
+                    "check permissions and dumpsys lights"
             }
         }
     }
 
-    private fun runCommand(value: String) {
-        if (value.isBlank()) return
+    private fun runCommand(
+        value: String
+    ) {
+        if (value.isBlank()) {
+            return
+        }
 
         remote {
-            unlockr?.exec(value) ?: "not connected"
+            unlockr?.exec(value)
+                ?: "not connected"
         }
     }
 
-    private fun remote(block: () -> String?) {
+    private fun remote(
+        block: () -> String?
+    ) {
         executor.execute {
-            val result = try {
-                block() ?: ""
-            } catch (e: Exception) {
-                "${e.javaClass.simpleName}: ${e.message}"
-            }
+            val result =
+                try {
+                    block() ?: ""
+                } catch (e: Exception) {
+                    "${e.javaClass.simpleName}: ${e.message}"
+                }
 
             main.post {
                 output.text = result
@@ -425,12 +607,21 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun makeButton(text: String): Button {
+    private fun makeButton(
+        text: String
+    ): Button {
         return Button(this).apply {
             this.text = text
-            this.setTextColor(Color.WHITE)
-            this.setBackgroundColor(Color.rgb(30, 30, 34))
-            this.setPadding(12, 8, 12, 8)
+            setTextColor(Color.WHITE)
+            setBackgroundColor(
+                Color.rgb(30, 30, 34)
+            )
+            setPadding(
+                12,
+                8,
+                12,
+                8
+            )
         }
     }
 }
