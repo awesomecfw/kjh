@@ -1,442 +1,662 @@
 package com.example.myapp
 
-import android.app.Service
-import android.content.Intent
-import android.hardware.lights.Light
-import android.hardware.lights.LightState
-import android.hardware.lights.LightsManager
-import android.hardware.lights.LightsRequest
+import android.app.Activity
+import android.content.ComponentName
+import android.content.ServiceConnection
+import android.graphics.Color
+import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import android.os.Looper
+import android.view.Gravity
+import android.view.ViewGroup
+import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import rikka.shizuku.Shizuku
 import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledFuture
-import java.util.concurrent.TimeUnit
 
-class UnlockrUserService : Service() {
+class MainActivity : Activity() {
 
-    private val executor = Executors.newSingleThreadScheduledExecutor()
+    private val executor = Executors.newCachedThreadPool()
+    private val main = Handler(Looper.getMainLooper())
 
-    private var rainbowTask: ScheduledFuture<*>? = null
-    private var failsafeTask: ScheduledFuture<*>? = null
-    private var session: LightsManager.LightsSession? = null
+    private var unlockr: IUnlockrService? = null
+    private var connected = false
 
-    private var lastLightError = "none"
+    private lateinit var status: TextView
+    private lateinit var output: TextView
+    private lateinit var command: EditText
 
-    private val binder = object : IUnlockrService.Stub() {
+    private val permissionCode = 4201
 
-        override fun getUid(): Int {
-            return android.os.Process.myUid()
-        }
+    private val serviceConnection = object : ServiceConnection {
 
-        override fun exec(command: String): String {
-            if (!isSafeCommand(command)) {
-                return "BLOCKED BY UNLOCKR FAILSAFE\n\nOnly safe read-only commands are allowed."
-            }
+        override fun onServiceConnected(
+            name: ComponentName?,
+            service: IBinder?
+        ) {
+            unlockr = IUnlockrService.Stub.asInterface(service)
+            connected = unlockr != null
 
-            return try {
-                val process = ProcessBuilder(
-                    "sh",
-                    "-c",
-                    command.trim()
-                )
-                    .redirectErrorStream(true)
-                    .start()
+            main.post {
+                if (connected) {
+                    val uid = unlockr?.uid ?: -1
 
-                val output = StringBuilder()
+                    status.text =
+                        "unlockr: connected • uid $uid"
 
-                BufferedReader(
-                    InputStreamReader(process.inputStream)
-                ).use { reader ->
-                    val buffer = CharArray(4096)
-                    var total = 0
-
-                    while (true) {
-                        val count = reader.read(buffer)
-
-                        if (count <= 0) {
-                            break
-                        }
-
-                        val allowed = minOf(
-                            count,
-                            32768 - total
-                        )
-
-                        if (allowed > 0) {
-                            output.append(buffer, 0, allowed)
-                            total += allowed
-                        }
-
-                        if (total >= 32768) {
-                            output.append("\n\n[output truncated]")
-                            break
-                        }
-                    }
-                }
-
-                if (!process.waitFor(5, TimeUnit.SECONDS)) {
-                    process.destroyForcibly()
-                    return "COMMAND TIMEOUT\n\nStopped after 5 seconds."
-                }
-
-                val result = output.toString()
-
-                if (result.isBlank()) {
-                    "exit=${process.exitValue()}"
+                    output.text =
+                        "UNLOCKR READY\n\n" +
+                        "backend: Bytezuku / Shizuku\n" +
+                        "uid: $uid\n\n" +
+                        "lights service ready"
                 } else {
-                    result
+                    status.text = "unlockr: connection failed"
                 }
-            } catch (e: Exception) {
-                "COMMAND FAILED\n\n${e.javaClass.simpleName}: ${e.message}"
             }
         }
 
-        override fun inspectLights(): String {
-            return inspectLightsInternal()
-        }
+        override fun onServiceDisconnected(
+            name: ComponentName?
+        ) {
+            unlockr = null
+            connected = false
 
-        override fun setLed(color: Int): Boolean {
-            stopRainbowInternal()
-            return setLedInternal(color)
-        }
-
-        override fun clearLed() {
-            clearLedInternal()
-        }
-
-        override fun startRainbow() {
-            startRainbowInternal()
-        }
-
-        override fun stopRainbow() {
-            stopRainbowInternal()
+            main.post {
+                status.text = "unlockr: disconnected"
+            }
         }
     }
 
-    override fun onBind(intent: Intent?): IBinder {
-        return binder
+    private val permissionListener =
+        Shizuku.OnRequestPermissionResultListener {
+                requestCode,
+                _ ->
+
+            if (requestCode == permissionCode) {
+                updateConnection()
+            }
+        }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        window.statusBarColor = Color.BLACK
+        window.navigationBarColor = Color.BLACK
+
+        buildUi()
+
+        Shizuku.addRequestPermissionResultListener(
+            permissionListener
+        )
+
+        updateConnection()
     }
 
     override fun onDestroy() {
-        stopRainbowInternal()
-        clearLedInternal()
-        executor.shutdownNow()
-        super.onDestroy()
-    }
-
-    private fun isSafeCommand(command: String): Boolean {
-        val c = command.trim()
-
-        if (c.isEmpty()) return false
-        if (c.length > 300) return false
-
-        val blocked = listOf(
-            ";",
-            "|",
-            "&",
-            "`",
-            "$(",
-            ">",
-            "<",
-            "\n",
-            "\r"
-        )
-
-        if (blocked.any { c.contains(it) }) {
-            return false
-        }
-
-        val first = c
-            .split(Regex("\\s+"))
-            .firstOrNull()
-            ?.lowercase()
-            ?: return false
-
-        val allowed = setOf(
-            "id",
-            "whoami",
-            "getprop",
-            "dumpsys",
-            "ps",
-            "ls",
-            "pm",
-            "settings",
-            "wm",
-            "uname"
-        )
-
-        if (first !in allowed) {
-            return false
-        }
-
-        if (first == "pm" && !c.startsWith("pm list ")) {
-            return false
-        }
-
-        if (first == "settings" && !c.startsWith("settings get ")) {
-            return false
-        }
-
-        if (
-            first == "wm" &&
-            !c.startsWith("wm size") &&
-            !c.startsWith("wm density")
-        ) {
-            return false
-        }
-
-        if (
-            first == "ls" &&
-            !c.startsWith("ls /sdcard") &&
-            !c.startsWith("ls /storage") &&
-            !c.startsWith("ls /system") &&
-            !c.startsWith("ls /vendor") &&
-            !c.startsWith("ls /data/local/tmp")
-        ) {
-            return false
-        }
-
-        return true
-    }
-
-    private fun inspectLightsInternal(): String {
-        return try {
-            val manager =
-                getSystemService(LightsManager::class.java)
-                    ?: return "LightsManager unavailable"
-
-            val lights = manager.lights
-
-            buildString {
-                append("UNLOCKR LIGHT INSPECTOR\n\n")
-                append("uid: ${android.os.Process.myUid()}\n")
-                append("lights: ${lights.size}\n")
-                append("last error: $lastLightError\n\n")
-
-                for (light in lights) {
-                    append("id: ${light.id}\n")
-                    append("name: ${light.name}\n")
-                    append("type: ${light.type}\n")
-                    append("ordinal: ${light.ordinal}\n")
-                    append("rgb: ${light.hasRgbControl()}\n")
-                    append("brightness: ${light.hasBrightnessControl()}\n")
-
-                    try {
-                        val state =
-                            manager.getLightState(light)
-
-                        append(
-                            "color: #${
-                                String.format(
-                                    "%08X",
-                                    state.color
-                                )
-                            }\n"
-                        )
-                    } catch (e: Exception) {
-                        append(
-                            "color: unavailable (${e.javaClass.simpleName})\n"
-                        )
-                    }
-
-                    append("\n")
-                }
-            }
-        } catch (e: Exception) {
-            "LIGHT INSPECTION FAILED\n\n${e.javaClass.simpleName}: ${e.message}"
-        }
-    }
-
-    private fun getQuestLight(): Light? {
-        val manager =
-            getSystemService(LightsManager::class.java)
-                ?: return null
-
-        return manager.lights.firstOrNull {
-            it.id == 1
-        }
-    }
-
-    private fun setLedInternal(color: Int): Boolean {
-        val manager =
-            getSystemService(LightsManager::class.java)
-
-        if (manager == null) {
-            lastLightError = "LightsManager unavailable"
-            return false
-        }
-
-        val light =
-            getQuestLight()
-
-        if (light == null) {
-            lastLightError = "Quest light id 1 not found"
-            return false
-        }
-
-        return try {
-            if (session == null) {
-                session = manager.openSession()
-            }
-
-            val state =
-                LightState.Builder()
-                    .setColor(color)
-                    .build()
-
-            val request =
-                LightsRequest.Builder()
-                    .addLight(light, state)
-                    .build()
-
-            session!!.requestLights(request)
-
-            lastLightError = "success"
-
-            scheduleFailsafe(10)
-
-            true
-        } catch (e: SecurityException) {
-            lastLightError =
-                "SecurityException: ${e.message ?: "permission denied"}"
-
-            false
-        } catch (e: Exception) {
-            lastLightError =
-                "${e.javaClass.simpleName}: ${e.message ?: "unknown error"}"
-
-            false
-        }
-    }
-
-    private fun clearLedInternal() {
-        failsafeTask?.cancel(false)
-        failsafeTask = null
-
-        rainbowTask?.cancel(false)
-        rainbowTask = null
-
-        val light = getQuestLight()
-        val currentSession = session
-
-        if (light != null && currentSession != null) {
-            try {
-                val request =
-                    LightsRequest.Builder()
-                        .clearLight(light)
-                        .build()
-
-                currentSession.requestLights(request)
-            } catch (e: Exception) {
-                lastLightError =
-                    "${e.javaClass.simpleName}: ${e.message ?: "clear failed"}"
-            }
-        }
-
         try {
-            currentSession?.close()
+            Shizuku.unbindUserService(
+                serviceArgs(),
+                serviceConnection,
+                true
+            )
         } catch (_: Exception) {
         }
 
-        session = null
-    }
-
-    private fun scheduleFailsafe(seconds: Long) {
-        failsafeTask?.cancel(false)
-
-        failsafeTask =
-            executor.schedule(
-                {
-                    clearLedInternal()
-                },
-                seconds,
-                TimeUnit.SECONDS
-            )
-    }
-
-    private fun startRainbowInternal() {
-        stopRainbowInternal()
-
-        val colors = intArrayOf(
-            0xFFFF0000.toInt(),
-            0xFFFF7A00.toInt(),
-            0xFFFFFF00.toInt(),
-            0xFF00FF00.toInt(),
-            0xFF00FFFF.toInt(),
-            0xFF0088FF.toInt(),
-            0xFF8000FF.toInt(),
-            0xFFFF00FF.toInt()
+        Shizuku.removeRequestPermissionResultListener(
+            permissionListener
         )
 
-        var index = 0
+        executor.shutdownNow()
 
-        rainbowTask =
-            executor.scheduleAtFixedRate(
-                {
-                    val color =
-                        colors[index % colors.size]
-
-                    index++
-
-                    setLedInternalNoFailsafe(color)
-                },
-                0,
-                250,
-                TimeUnit.MILLISECONDS
-            )
-
-        failsafeTask?.cancel(false)
-
-        failsafeTask =
-            executor.schedule(
-                {
-                    stopRainbowInternal()
-                    clearLedInternal()
-                },
-                15,
-                TimeUnit.SECONDS
-            )
+        super.onDestroy()
     }
 
-    private fun setLedInternalNoFailsafe(color: Int) {
-        val manager =
-            getSystemService(LightsManager::class.java)
-                ?: return
+    private fun updateConnection() {
+        if (!Shizuku.pingBinder()) {
+            status.text =
+                "unlockr: Bytezuku not running"
 
-        val light =
-            getQuestLight()
-                ?: return
+            output.text =
+                "start Bytezuku first."
 
+            return
+        }
+
+        if (
+            Shizuku.checkSelfPermission() !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            status.text =
+                "unlockr: permission required"
+
+            Shizuku.requestPermission(
+                permissionCode
+            )
+
+            return
+        }
+
+        connectUserService()
+    }
+
+    private fun connectUserService() {
         try {
-            if (session == null) {
-                session = manager.openSession()
-            }
-
-            val state =
-                LightState.Builder()
-                    .setColor(color)
-                    .build()
-
-            val request =
-                LightsRequest.Builder()
-                    .addLight(light, state)
-                    .build()
-
-            session!!.requestLights(request)
-
-            lastLightError = "rainbow: success"
-        } catch (e: SecurityException) {
-            lastLightError =
-                "rainbow SecurityException: ${e.message ?: "permission denied"}"
+            Shizuku.bindUserService(
+                serviceArgs(),
+                serviceConnection
+            )
         } catch (e: Exception) {
-            lastLightError =
-                "rainbow ${e.javaClass.simpleName}: ${e.message ?: "unknown error"}"
+            status.text =
+                "unlockr: bind failed"
+
+            output.text =
+                "${e.javaClass.simpleName}\n\n${e.message}"
         }
     }
 
-    private fun stopRainbowInternal() {
-        rainbowTask?.cancel(false)
-        rainbowTask = null
+    private fun serviceArgs(): Shizuku.UserServiceArgs {
+        return Shizuku.UserServiceArgs(
+            ComponentName(
+                this,
+                UnlockrUserService::class.java
+            )
+        )
+            .daemon(false)
+            .debuggable(true)
+            .version(1)
+            .tag("unlockr")
+    }
+
+    private fun buildUi() {
+        val root = LinearLayout(this)
+
+        root.orientation =
+            LinearLayout.VERTICAL
+
+        root.setPadding(
+            24,
+            24,
+            24,
+            24
+        )
+
+        root.setBackgroundColor(
+            Color.rgb(10, 10, 12)
+        )
+
+        status = TextView(this)
+
+        status.text =
+            "unlockr: connecting..."
+
+        status.textSize = 15f
+
+        status.setTextColor(
+            Color.WHITE
+        )
+
+        root.addView(
+            status,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        val tabs = LinearLayout(this)
+
+        tabs.orientation =
+            LinearLayout.HORIZONTAL
+
+        tabs.gravity =
+            Gravity.CENTER_VERTICAL
+
+        root.addView(
+            tabs,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = 24
+                bottomMargin = 16
+            }
+        )
+
+        val terminalButton =
+            makeButton("terminal")
+
+        val lightsButton =
+            makeButton("lights")
+
+        tabs.addView(
+            terminalButton,
+            LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f
+            )
+        )
+
+        tabs.addView(
+            lightsButton,
+            LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f
+            )
+        )
+
+        val content =
+            LinearLayout(this)
+
+        content.orientation =
+            LinearLayout.VERTICAL
+
+        root.addView(
+            content,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+        )
+
+        command =
+            EditText(this)
+
+        command.hint =
+            "adb shell command"
+
+        command.setSingleLine(true)
+
+        command.setTextColor(
+            Color.WHITE
+        )
+
+        command.setHintTextColor(
+            Color.GRAY
+        )
+
+        command.setBackgroundColor(
+            Color.rgb(25, 25, 28)
+        )
+
+        command.setPadding(
+            18,
+            14,
+            18,
+            14
+        )
+
+        val run =
+            makeButton("run")
+
+        val terminalControls =
+            LinearLayout(this)
+
+        terminalControls.orientation =
+            LinearLayout.HORIZONTAL
+
+        terminalControls.addView(
+            command,
+            LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f
+            )
+        )
+
+        terminalControls.addView(
+            run,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        content.addView(
+            terminalControls
+        )
+
+        output =
+            TextView(this)
+
+        output.text =
+            "waiting for unlockr..."
+
+        output.textSize =
+            13f
+
+        output.typeface =
+            android.graphics.Typeface.MONOSPACE
+
+        output.setTextColor(
+            Color.rgb(225, 225, 225)
+        )
+
+        output.setPadding(
+            12,
+            16,
+            12,
+            16
+        )
+
+        val scroll =
+            ScrollView(this)
+
+        scroll.addView(output)
+
+        content.addView(
+            scroll,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            ).apply {
+                topMargin = 12
+            }
+        )
+
+        setContentView(root)
+
+        run.setOnClickListener {
+            runCommand(
+                command.text.toString()
+            )
+        }
+
+        terminalButton.setOnClickListener {
+            showTerminal(
+                terminalControls,
+                scroll
+            )
+        }
+
+        lightsButton.setOnClickListener {
+            showLights(
+                content,
+                terminalControls,
+                scroll
+            )
+        }
+    }
+
+    private fun showTerminal(
+        controls: LinearLayout,
+        scroll: ScrollView
+    ) {
+        controls.visibility =
+            android.view.View.VISIBLE
+
+        scroll.visibility =
+            android.view.View.VISIBLE
+
+        output.text =
+            "SAFE ADB TERMINAL\n\n" +
+            "try:\n" +
+            "id\n" +
+            "getprop ro.product.model\n" +
+            "dumpsys lights\n" +
+            "pm list packages\n" +
+            "ps\n" +
+            "wm size\n" +
+            "wm density\n"
+    }
+
+    private fun showLights(
+        content: LinearLayout,
+        controls: LinearLayout,
+        scroll: ScrollView
+    ) {
+        controls.visibility =
+            android.view.View.GONE
+
+        scroll.visibility =
+            android.view.View.GONE
+
+        val panel =
+            LinearLayout(this)
+
+        panel.orientation =
+            LinearLayout.VERTICAL
+
+        val back =
+            makeButton("back")
+
+        val inspect =
+            makeButton("inspect lights")
+
+        val red =
+            makeButton("red")
+
+        val green =
+            makeButton("green")
+
+        val blue =
+            makeButton("blue")
+
+        val white =
+            makeButton("white")
+
+        val yellow =
+            makeButton("yellow")
+
+        val purple =
+            makeButton("purple")
+
+        val cyan =
+            makeButton("cyan")
+
+        val rainbow =
+            makeButton("rainbow")
+
+        val off =
+            makeButton("failsafe off")
+
+        panel.addView(back)
+        panel.addView(inspect)
+        panel.addView(red)
+        panel.addView(green)
+        panel.addView(blue)
+        panel.addView(white)
+        panel.addView(yellow)
+        panel.addView(purple)
+        panel.addView(cyan)
+        panel.addView(rainbow)
+        panel.addView(off)
+
+        content.removeView(controls)
+        content.removeView(scroll)
+
+        content.addView(
+            panel,
+            0,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        content.addView(
+            scroll,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            ).apply {
+                topMargin = 12
+            }
+        )
+
+        back.setOnClickListener {
+            content.removeView(panel)
+            showTerminal(
+                controls,
+                scroll
+            )
+        }
+
+        inspect.setOnClickListener {
+            remote {
+                unlockr?.inspectLights()
+                    ?: "not connected"
+            }
+        }
+
+        red.setOnClickListener {
+            led(
+                0xFFFF0000.toInt(),
+                "red"
+            )
+        }
+
+        green.setOnClickListener {
+            led(
+                0xFF00FF00.toInt(),
+                "green"
+            )
+        }
+
+        blue.setOnClickListener {
+            led(
+                0xFF0000FF.toInt(),
+                "blue"
+            )
+        }
+
+        white.setOnClickListener {
+            led(
+                0xFFFFFFFF.toInt(),
+                "white"
+            )
+        }
+
+        yellow.setOnClickListener {
+            led(
+                0xFFFFFF00.toInt(),
+                "yellow"
+            )
+        }
+
+        purple.setOnClickListener {
+            led(
+                0xFF8000FF.toInt(),
+                "purple"
+            )
+        }
+
+        cyan.setOnClickListener {
+            led(
+                0xFF00FFFF.toInt(),
+                "cyan"
+            )
+        }
+
+        rainbow.setOnClickListener {
+            remote {
+                if (unlockr == null) {
+                    "not connected"
+                } else {
+                    unlockr!!.startRainbow()
+
+                    "rainbow started\n\n" +
+                        "failsafe: 15 seconds"
+                }
+            }
+        }
+
+        off.setOnClickListener {
+            remote {
+                if (unlockr == null) {
+                    "not connected"
+                } else {
+                    unlockr!!.clearLed()
+
+                    "LED override cleared"
+                }
+            }
+        }
+    }
+
+    private fun led(
+        color: Int,
+        name: String
+    ) {
+        remote {
+            val service =
+                unlockr
+
+            if (service == null) {
+                return@remote "not connected"
+            }
+
+            val ok =
+                service.setLed(color)
+
+            if (ok) {
+                "$name LED request sent\n\n" +
+                    "light id: 1\n" +
+                    "uid: ${service.uid}\n" +
+                    "failsafe: 10 seconds\n\n" +
+                    "check the physical LED"
+            } else {
+                "LED REQUEST FAILED\n\n" +
+                    "requested: $name\n" +
+                    "light id: 1\n\n" +
+                    service.inspectLights()
+            }
+        }
+    }
+
+    private fun runCommand(
+        value: String
+    ) {
+        if (value.isBlank()) {
+            return
+        }
+
+        remote {
+            unlockr?.exec(value)
+                ?: "not connected"
+        }
+    }
+
+    private fun remote(
+        block: () -> String?
+    ) {
+        executor.execute {
+            val result =
+                try {
+                    block() ?: ""
+                } catch (e: Exception) {
+                    "${e.javaClass.simpleName}: ${e.message}"
+                }
+
+            main.post {
+                output.text = result
+            }
+        }
+    }
+
+    private fun makeButton(
+        text: String
+    ): Button {
+        return Button(this).apply {
+            this.text = text
+            setTextColor(Color.WHITE)
+            setBackgroundColor(
+                Color.rgb(30, 30, 34)
+            )
+            setPadding(
+                12,
+                8,
+                12,
+                8
+            )
+        }
     }
 }
