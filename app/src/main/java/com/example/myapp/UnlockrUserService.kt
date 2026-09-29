@@ -21,6 +21,8 @@ class UnlockrUserService : Service() {
     private var failsafeTask: ScheduledFuture<*>? = null
     private var session: LightsManager.LightsSession? = null
 
+    private var lastLightError = "none"
+
     private val binder = object : IUnlockrService.Stub() {
 
         override fun getUid(): Int {
@@ -209,7 +211,8 @@ class UnlockrUserService : Service() {
             buildString {
                 append("UNLOCKR LIGHT INSPECTOR\n\n")
                 append("uid: ${android.os.Process.myUid()}\n")
-                append("lights: ${lights.size}\n\n")
+                append("lights: ${lights.size}\n")
+                append("last error: $lastLightError\n\n")
 
                 for (light in lights) {
                     append("id: ${light.id}\n")
@@ -231,8 +234,10 @@ class UnlockrUserService : Service() {
                                 )
                             }\n"
                         )
-                    } catch (_: Exception) {
-                        append("color: unavailable\n")
+                    } catch (e: Exception) {
+                        append(
+                            "color: unavailable (${e.javaClass.simpleName})\n"
+                        )
                     }
 
                     append("\n")
@@ -256,11 +261,19 @@ class UnlockrUserService : Service() {
     private fun setLedInternal(color: Int): Boolean {
         val manager =
             getSystemService(LightsManager::class.java)
-                ?: return false
+
+        if (manager == null) {
+            lastLightError = "LightsManager unavailable"
+            return false
+        }
 
         val light =
             getQuestLight()
-                ?: return false
+
+        if (light == null) {
+            lastLightError = "Quest light id 1 not found"
+            return false
+        }
 
         return try {
             if (session == null) {
@@ -279,12 +292,20 @@ class UnlockrUserService : Service() {
 
             session!!.requestLights(request)
 
+            lastLightError = "success"
+
             scheduleFailsafe(10)
 
             true
-        } catch (_: SecurityException) {
+        } catch (e: SecurityException) {
+            lastLightError =
+                "SecurityException: ${e.message ?: "permission denied"}"
+
             false
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            lastLightError =
+                "${e.javaClass.simpleName}: ${e.message ?: "unknown error"}"
+
             false
         }
     }
@@ -307,7 +328,9 @@ class UnlockrUserService : Service() {
                         .build()
 
                 currentSession.requestLights(request)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                lastLightError =
+                    "${e.javaClass.simpleName}: ${e.message ?: "clear failed"}"
             }
         }
 
@@ -401,7 +424,14 @@ class UnlockrUserService : Service() {
                     .build()
 
             session!!.requestLights(request)
-        } catch (_: Exception) {
+
+            lastLightError = "rainbow: success"
+        } catch (e: SecurityException) {
+            lastLightError =
+                "rainbow SecurityException: ${e.message ?: "permission denied"}"
+        } catch (e: Exception) {
+            lastLightError =
+                "rainbow ${e.javaClass.simpleName}: ${e.message ?: "unknown error"}"
         }
     }
 
